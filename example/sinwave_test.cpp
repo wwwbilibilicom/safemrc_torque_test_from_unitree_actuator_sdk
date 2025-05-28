@@ -5,6 +5,8 @@
 #include <string>
 #include <iostream>
 #include <limits>
+#include <cstdlib>  // 添加此行用于system函数
+#include <sys/stat.h>
 #include "serialPort/SerialPort.h"
 #include "unitreeMotor/unitreeMotor.h"
 
@@ -85,7 +87,26 @@ void motorHoming(SerialPort& serial, MotorCmd& cmd, MotorData& data, float gear_
     std::cout << "\nMotor homing completed" << std::endl;
 }
 
+// 修改绘图函数
+void plotData(const std::string& filename) {
+    // 使用conda的Python
+    std::string command = "cd ../example && /home/wenbo/anaconda3/envs/torque-bench/bin/python plot_data.py data/" + filename;
+    std::cout << "\nGenerating plots..." << std::endl;
+    int result = system(command.c_str());
+    if (result != 0) {
+        std::cerr << "Error: Failed to generate plots!" << std::endl;
+    }
+}
+
+// 创建目录的函数
+void ensureDataDirectory() {
+    mkdir("data", 0777);
+}
+
 int main() {
+    // 确保data目录存在
+    ensureDataDirectory();
+
     // 初始化串口
     SerialPort serial("/dev/ttyUSB0");
     MotorCmd cmd;
@@ -102,7 +123,7 @@ int main() {
     // 设置电机控制参数
     cmd.mode = queryMotorMode(MotorType::B1, MotorMode::FOC);
     cmd.id = 0;
-    cmd.kp = 0.5f;  // 位置环增益
+    cmd.kp = 5.0f;  // 位置环增益
     cmd.kd = 20.0f; // 速度环增益
     cmd.q = 0.0f;   // 位置
     cmd.dq = 0.0f;  // 速度
@@ -124,22 +145,25 @@ int main() {
     float frequency = getInputWithDefault("Enter frequency (Hz)", 1.0f);
     float cycles = getInputWithDefault("Enter number of cycles", 3.0f);
     
+    // 修改文件保存路径
     std::string filename;
     std::cout << "Enter filename [demo]: ";
     std::getline(std::cin, filename);
     if (filename.empty()) {
         filename = "demo";
     }
-    filename += ".csv";
-
+    
+    // 构建完整的文件路径（相对于example目录）
+    std::string full_path = "../example/data/" + filename + ".csv";
+    
     // 计算运行时间
     float run_time = cycles / frequency;
     std::cout << "\nRunning for " << run_time << " seconds" << std::endl;
 
     // 创建数据文件
-    std::ofstream data_file(filename);
+    std::ofstream data_file(full_path);
     if (!data_file.is_open()) {
-        std::cerr << "Error: Could not open file " << filename << std::endl;
+        std::cerr << "Error: Could not open file " << full_path << std::endl;
         return 1;
     }
     data_file << "Time(s),d_Torque(Nm),a_Torque(Nm),Velocity(rad/s),Position(rad),Desired_Position(rad),Power(W)\n";
@@ -199,11 +223,14 @@ int main() {
         usleep(1);  // 2000微秒延时，对应500Hz
     }
 
-    std::cout << "\nMotor control completed. Data saved to " << filename << std::endl;
+    std::cout << "\nMotor control completed. Data saved to " << full_path << std::endl;
     data_file.close();
 
     // 执行电机归零
     motorHoming(serial, cmd, data, gear_ratio);
+
+    // 绘制数据图表（使用完整路径）
+    plotData(filename);
 
     return 0;
 }

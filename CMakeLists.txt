@@ -30,10 +30,11 @@ add_executable(changeID example/changeID.cpp)
 target_link_libraries(changeID ${EXTRA_LIBS})
 
 add_executable(sinwave_test example/sinwave_test.cpp)
-target_link_libraries(sinwave_test ${EXTRA_LIBS})
+target_link_libraries(sinwave_test ${EXTRA_LIBS} stdc++fs)
 
 set(LIBRARY_OUTPUT_PATH "../lib")
 add_subdirectory(thirdparty/pybind11)
 pybind11_add_module(unitree_actuator_sdk thirdparty/python_wrapper/wrapper.cpp)
 target_link_libraries(unitree_actuator_sdk PRIVATE ${EXTRA_LIBS})
 set_target_properties(unitree_actuator_sdk PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${LIBRARY_OUTPUT_PATH}")
+
