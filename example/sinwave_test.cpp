@@ -10,9 +10,12 @@
 #include "serialPort/SerialPort.h"
 #include "unitreeMotor/unitreeMotor.h"
 
+#define WORK_KP 5.0f
+#define WORK_KD 20.0f
+
 // 生成正弦波轨迹的函数
-float generateSineWave(float time, float amplitude, float frequency) {
-    return amplitude * sin(2 * M_PI * frequency * time);
+float generateSineWave(float time, float amplitude, float frequency, float zero_offset = 0.0f) {
+    return amplitude * sin(2 * M_PI * frequency * time) + zero_offset;
 }
 
 // 保存数据到文件的函数
@@ -87,6 +90,50 @@ void motorHoming(SerialPort& serial, MotorCmd& cmd, MotorData& data, float gear_
     std::cout << "\nMotor homing completed" << std::endl;
 }
 
+// 设置当前位置为零位的函数
+void setCurrentPositionAsZero(SerialPort& serial, MotorCmd& cmd, MotorData& data, float gear_ratio, float& zero_position) {
+    std::cout << "\nSetting current position as zero position..." << std::endl;
+    
+    // 1. 首先将电机设置为零刚度模式
+    cmd.mode = queryMotorMode(MotorType::B1, MotorMode::FOC);
+    cmd.kp = 0.0f;  // 设置位置环增益为0
+    cmd.kd = 0.0f;  // 设置速度环增益为0
+    cmd.tau = 0.0f; // 设置力矩为0
+    
+    // 等待电机稳定
+    for(int i = 0; i < 100; i++) {  // 等待约200ms
+        if (!serial.sendRecv(&cmd, &data)) {
+            std::cerr << "Error: Lost communication during zero position setting!" << std::endl;
+            return;
+        }
+        usleep(2000);  // 2000微秒延时
+    }
+    
+    // 2. 记录当前位置作为新的零位（考虑减速比）
+    zero_position = data.q;  // 记录转子位置作为零位
+    float output_position = zero_position / gear_ratio;  // 转换为输出轴位置
+    std::cout << "Current rotor position: " << zero_position << " rad" << std::endl;
+    std::cout << "Current output position: " << output_position << " rad ("
+              << output_position * (180.0f / M_PI) << " degrees)" << std::endl;
+    
+    cmd.q = zero_position;  // 设置当前位置为零位
+
+    // 3. 恢复正常控制参数
+    cmd.kp = WORK_KP;  // 恢复位置环增益
+    cmd.kd = WORK_KD; // 恢复速度环增益
+    
+    // 4. 等待电机稳定在新的控制参数下
+    for(int i = 0; i < 100; i++) {  // 等待约200ms
+        if (!serial.sendRecv(&cmd, &data)) {
+            std::cerr << "Error: Lost communication during control parameter restoration!" << std::endl;
+            return;
+        }
+        usleep(2000);  // 2000微秒延时
+    }
+    
+    std::cout << "Zero position setting completed" << std::endl;
+}
+
 // 修改绘图函数
 void plotData(const std::string& filename) {
     // 使用conda的Python
@@ -123,8 +170,8 @@ int main() {
     // 设置电机控制参数
     cmd.mode = queryMotorMode(MotorType::B1, MotorMode::FOC);
     cmd.id = 0;
-    cmd.kp = 5.0f;  // 位置环增益
-    cmd.kd = 20.0f; // 速度环增益
+    cmd.kp = 0.0f;  // 位置环增益
+    cmd.kd = 0.0f; // 速度环增益
     cmd.q = 0.0f;   // 位置
     cmd.dq = 0.0f;  // 速度
     cmd.tau = 0.0f; // 力矩
@@ -139,6 +186,10 @@ int main() {
 
     // 清除输入缓冲区
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    // 在开始正弦波运动之前，设置当前位置为零位
+    float zero_position = 0.0f;  // 用于存储零位位置
+    setCurrentPositionAsZero(serial, cmd, data, gear_ratio, zero_position);
 
     // 获取用户输入参数（带默认值）
     float amplitude = getInputWithDefault("Enter amplitude (degrees)", 1.0f);
@@ -177,10 +228,11 @@ int main() {
 
     // 主控制循环
     while (elapsed_time < run_time) {
-        // 计算期望位置
+        // 计算期望位置（以当前位置为基准点）
         float desired_angle_deg = generateSineWave(elapsed_time, amplitude, frequency);
         float desired_angle_rad = desired_angle_deg * (M_PI / 180.0f);
-        float rotor_angle = desired_angle_rad * gear_ratio;
+        // 将期望角度转换为转子角度，并加上零位偏移
+        float rotor_angle = (desired_angle_rad * gear_ratio) + zero_position;
 
         // 更新电机命令
         cmd.q = rotor_angle;
@@ -202,13 +254,13 @@ int main() {
                       cmd.tau,
                       data.tau,
                       data.dq / gear_ratio,
-                      data.q / gear_ratio,
+                      (data.q-zero_position) / gear_ratio,
                       desired_angle_rad,
                       power);
 
         // 打印状态
         std::cout << "\rTime: " << elapsed_time << "s / " << run_time << "s"
-                  << " | Position: " << (data.q / gear_ratio) * (180.0f / M_PI) << " deg"
+                  << " | Position: " << ((data.q-zero_position) / gear_ratio) * (180.0f / M_PI) << " deg"
                   << " | Velocity: " << data.dq / gear_ratio << " rad/s"
                   << " | Torque: " << data.tau << " Nm"
                   << " | Temp: " << data.temp << " C"
