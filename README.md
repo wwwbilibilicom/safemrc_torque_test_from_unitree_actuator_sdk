@@ -2,6 +2,15 @@
 
 If you have any questions or need assistance with usage, feel free to contact support@unitree.com.
 
+### Dependency
+If you want to run sinwave_test or sintorque_test, you need to install the following packages:
+#### Conda
+```bash
+conda env create -n torque-test python=3.8
+conda activate torque-test
+conda install pandas matplotlib numpy
+```
+
 ### Notice
 
 support motor: GO-M8010-6 motor、A1 motor、 B1 motor
@@ -20,7 +29,7 @@ cmake ..
 make
 ```
 
-### Run
+### To Run Unitree Motor example
 If the compilation is successful, many C++ example executable files will be generated in the build folder. Then run the examples with 'sudo', for example:
 ```bash
 sudo ./example_a1_motor
@@ -29,6 +38,26 @@ sudo ./example_a1_motor
 If you need to run the Python example, please enter the "python" folder. Then run the examples with 'sudo', for example:
 ```python
 sudo python3 example_a1_motor.py
+```
+
+
+### To run USTC pHRI safety lab motor based  clutch test
+If the compilation is successful, many Python example executable files will be generated in the build folder. Then run the examples with 'sudo', for example:
+```bash
+sudo ./sinwave_test
+```
+#### Warning
+Remeber to set the correct python path in sintorque_test.cpp and sinwave_test.cpp.
+```bash
+void plotData(const std::string& filename) {
+    // 使用conda的Python
+    std::string command = "cd ../example && /home/wenbo/anaconda3/envs/torque-bench/bin/python plot_data.py data/" + filename;
+    std::cout << "\nGenerating plots..." << std::endl;
+    int result = system(command.c_str());
+    if (result != 0) {
+        std::cerr << "Error: Failed to generate plots!" << std::endl;
+    }
+}
 ```
 
 ### Tip
