@@ -7,19 +7,32 @@
 #include <limits>
 #include <cstdlib>  // 添加此行用于system函数
 #include <sys/stat.h>
-#include <thread>  // 添加线程支持
+#include <thread>
 #include "serialPort/SerialPort.h"
 #include "unitreeMotor/unitreeMotor.h"
 
 #define WORK_KP 5.0f
-#define WORK_KD 20.0f
-#define CONTROL_PERIOD_US 100  // 控制周期：10微秒 (100kHz)
-#define MAX_RETRY_COUNT 3     // 最大重试次数
-#define RETRY_DELAY_US 5      // 重试延时（微秒）
+#define WORK_KD 30.0f
+#define CONTROL_PERIOD_US 100  // 控制周期：100微秒 (10kHz)
+#define MAX_RETRY_COUNT 3      // 最大重试次数
 
-// 生成正弦波轨迹的函数
-float generateSineWave(float time, float amplitude, float frequency, float zero_offset = 0.0f) {
-    return (amplitude/2) *(sin(2 * M_PI * frequency * time + 3 * M_PI / 2)+1) + zero_offset;
+// 生成三角波轨迹的函数
+float generateTriangleWave(float time, float amplitude, float frequency) {
+    // 计算周期
+    float period = 1.0f / frequency;
+    // 计算当前时间在周期内的位置
+    float t = fmod(time, period);
+    // 计算上升和下降的斜率
+    float slope = 2.0f * amplitude / period;
+    
+    // 生成三角波
+    if (t < period / 2.0f) {
+        // 上升段：从0上升到amplitude
+        return slope * t;
+    } else {
+        // 下降段：从amplitude下降到0
+        return amplitude - slope * (t - period / 2.0f);
+    }
 }
 
 // 保存数据到文件的函数
@@ -50,48 +63,6 @@ float getInputWithDefault(const std::string& prompt, float default_value) {
         std::cout << "Invalid input, using default value: " << default_value << std::endl;
         return default_value;
     }
-}
-
-// 电机归零函数
-void motorHoming(SerialPort& serial, MotorCmd& cmd, MotorData& data, float gear_ratio, float homing_time = 2.0f) {
-    std::cout << "\nStarting motor homing..." << std::endl;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    float elapsed_time = 0.0f;
-    float initial_position = (data.q / gear_ratio) * (180.0f / M_PI);
-    
-    while (elapsed_time < homing_time) {
-        // 使用余弦函数生成平滑的归零轨迹
-        float progress = elapsed_time / homing_time;
-        float desired_angle_deg = initial_position * cos(progress * M_PI / 2);
-        float desired_angle_rad = desired_angle_deg * (M_PI / 180.0f);
-        float rotor_angle = desired_angle_rad * gear_ratio;
-
-        // 更新电机命令
-        cmd.q = rotor_angle;
-        cmd.dq = 0.0f;
-        cmd.tau = 0.0f;
-
-        // 发送命令并接收数据
-        if (!serial.sendRecv(&cmd, &data)) {
-            std::cerr << "Error: Lost communication during homing!" << std::endl;
-            return;
-        }
-
-        // 打印状态
-        std::cout << "\rHoming progress: " << (1.0f - progress) * 100 << "%"
-                  << " | Position: " << (data.q / gear_ratio) * (180.0f / M_PI) << " deg"
-                  << " | Velocity: " << data.dq / gear_ratio << " rad/s"
-                  << " | Torque: " << data.tau << " Nm" << std::flush;
-
-        // 更新运行时间
-        elapsed_time = std::chrono::duration<float>(
-            std::chrono::high_resolution_clock::now() - start_time
-        ).count();
-
-        usleep(2000);  // 2000微秒延时，对应500Hz
-    }
-    std::cout << "\nMotor homing completed" << std::endl;
 }
 
 // 设置当前位置为零位的函数
@@ -174,8 +145,8 @@ int main() {
     // 设置电机控制参数
     cmd.mode = queryMotorMode(MotorType::B1, MotorMode::FOC);
     cmd.id = 0;
-    cmd.kp = 0.0f;  // 位置环增益
-    cmd.kd = 0.0f; // 速度环增益
+    cmd.kp = WORK_KP;  // 位置环增益
+    cmd.kd = WORK_KD; // 速度环增益
     cmd.q = 0.0f;   // 位置
     cmd.dq = 0.0f;  // 速度
     cmd.tau = 0.0f; // 力矩
@@ -191,7 +162,7 @@ int main() {
     // 清除输入缓冲区
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-    // 在开始正弦波运动之前，设置当前位置为零位
+    // 在开始三角波运动之前，设置当前位置为零位
     float zero_position = 0.0f;  // 用于存储零位位置
     setCurrentPositionAsZero(serial, cmd, data, gear_ratio, zero_position);
 
@@ -235,6 +206,7 @@ int main() {
     float last_successful_position = 0.0f;
     bool need_resend = false;
     auto last_control_time = std::chrono::high_resolution_clock::now();
+    int retry_count = 0;  // 当前重试次数
     
     while (elapsed_time < run_time) {
         // 计算时间间隔
@@ -257,9 +229,10 @@ int main() {
         
         if (!need_resend) {
             // 计算新的期望位置
-            desired_angle_deg = generateSineWave(elapsed_time, amplitude, frequency);
+            desired_angle_deg = generateTriangleWave(elapsed_time, amplitude, frequency);
             desired_angle_rad = desired_angle_deg * (M_PI / 180.0f);
             rotor_angle = (desired_angle_rad * gear_ratio) + zero_position;
+            retry_count = 0;  // 重置重试计数
         } else {
             // 使用上一次成功的位置
             desired_angle_deg = last_successful_position;
@@ -274,16 +247,22 @@ int main() {
 
         // 发送命令并接收数据
         if (!serial.sendRecv(&cmd, &data)) {
-            std::cerr << "\rCommunication failed, will retry last position..." << std::flush;
+            retry_count++;
+            if (retry_count >= MAX_RETRY_COUNT) {
+                std::cerr << "\nError: Failed to send command after " << MAX_RETRY_COUNT << " attempts!" << std::endl;
+                break;
+            }
             need_resend = true;
-            std::this_thread::sleep_for(std::chrono::microseconds(RETRY_DELAY_US));
-            continue;
+            std::cerr << "\rCommunication failed, will retry in next period. Retry: " << retry_count << "/" << MAX_RETRY_COUNT << std::flush;
+        } else {
+            // 通信成功，更新状态
+            need_resend = false;
+            last_successful_time = elapsed_time;
+            last_successful_position = desired_angle_deg;
+            retry_count = 0;
         }
 
-        // 通信成功，更新状态
-        need_resend = false;
-        last_successful_time = elapsed_time;
-        last_successful_position = desired_angle_deg;
+        // 更新控制时间
         last_control_time = current_time;
 
         // 计算功率
@@ -310,6 +289,7 @@ int main() {
                       << " | Temp: " << data.temp << " C"
                       << " | Error: " << data.merror 
                       << " | Resend: " << (need_resend ? "Yes" : "No")
+                      << " | Retry: " << retry_count << "/" << MAX_RETRY_COUNT
                       << " | Control Freq: " << (1000000.0f / time_since_last_control) << " Hz" << std::flush;
         }
 
@@ -322,11 +302,8 @@ int main() {
     std::cout << "\nMotor control completed. Data saved to " << full_path << std::endl;
     data_file.close();
 
-    // 执行电机归零
-    motorHoming(serial, cmd, data, gear_ratio);
-
-    // 绘制数据图表（使用完整路径）
+    // 绘制数据图表
     plotData(filename);
 
     return 0;
-}
+} 

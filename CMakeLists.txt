@@ -35,6 +35,9 @@ target_link_libraries(sinwave_test ${EXTRA_LIBS} stdc++fs)
 add_executable(sintorque_test example/sintorque_test.cpp)
 target_link_libraries(sintorque_test ${EXTRA_LIBS} stdc++fs)
 
+add_executable(trianglewave_test example/trianglewave_test.cpp)
+target_link_libraries(trianglewave_test ${EXTRA_LIBS} stdc++fs)
+
 set(LIBRARY_OUTPUT_PATH "../lib")
 add_subdirectory(thirdparty/pybind11)
 pybind11_add_module(unitree_actuator_sdk thirdparty/python_wrapper/wrapper.cpp)
