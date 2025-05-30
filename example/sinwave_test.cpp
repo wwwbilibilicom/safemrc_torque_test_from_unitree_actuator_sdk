@@ -13,13 +13,24 @@
 
 #define WORK_KP 5.0f
 #define WORK_KD 20.0f
-#define CONTROL_PERIOD_US 100  // 控制周期：10微秒 (100kHz)
+#define CONTROL_PERIOD_US 10  // 控制周期：10微秒 (100kHz)
 #define MAX_RETRY_COUNT 3     // 最大重试次数
 #define RETRY_DELAY_US 5      // 重试延时（微秒）
+#define VELOCITY_SMOOTHING_FACTOR 0.8f  // 速度平滑因子 (0-1之间，越小越平滑)
 
 // 生成正弦波轨迹的函数
 float generateSineWave(float time, float amplitude, float frequency, float zero_offset = 0.0f) {
     return (amplitude/2) *(sin(2 * M_PI * frequency * time + 3 * M_PI / 2)+1) + zero_offset;
+}
+
+// 生成正弦波速度的函数
+float generateSineWaveVelocity(float time, float amplitude, float frequency) {
+    return (amplitude/2) * (2 * M_PI * frequency) * cos(2 * M_PI * frequency * time + 3 * M_PI / 2);
+}
+
+// 速度平滑函数
+float smoothVelocity(float current_velocity, float target_velocity, float smoothing_factor) {
+    return current_velocity + smoothing_factor * (target_velocity - current_velocity);
 }
 
 // 保存数据到文件的函数
@@ -233,8 +244,11 @@ int main() {
     // 主控制循环
     float last_successful_time = 0.0f;
     float last_successful_position = 0.0f;
+    float last_successful_velocity = 0.0f;
+    float smoothed_velocity = 0.0f;  // 用于存储平滑后的速度
     bool need_resend = false;
     auto last_control_time = std::chrono::high_resolution_clock::now();
+    int retry_count = 0;  // 当前重试次数
     
     while (elapsed_time < run_time) {
         // 计算时间间隔
@@ -253,37 +267,57 @@ int main() {
         
         float desired_angle_deg;
         float desired_angle_rad;
+        float desired_velocity_rad;
         float rotor_angle;
+        float rotor_velocity;
         
         if (!need_resend) {
-            // 计算新的期望位置
+            // 计算新的期望位置和速度
             desired_angle_deg = generateSineWave(elapsed_time, amplitude, frequency);
             desired_angle_rad = desired_angle_deg * (M_PI / 180.0f);
+            desired_velocity_rad = generateSineWaveVelocity(elapsed_time, amplitude, frequency) * (M_PI / 180.0f);
+            
+            // 对速度进行平滑处理
+            smoothed_velocity = smoothVelocity(smoothed_velocity, desired_velocity_rad, VELOCITY_SMOOTHING_FACTOR);
+            
             rotor_angle = (desired_angle_rad * gear_ratio) + zero_position;
+            rotor_velocity = smoothed_velocity * gear_ratio;
+            
+            retry_count = 0;  // 重置重试计数
         } else {
-            // 使用上一次成功的位置
+            // 使用上一次成功的位置和速度
             desired_angle_deg = last_successful_position;
             desired_angle_rad = desired_angle_deg * (M_PI / 180.0f);
+            desired_velocity_rad = last_successful_velocity;
+            
             rotor_angle = (desired_angle_rad * gear_ratio) + zero_position;
+            rotor_velocity = smoothed_velocity * gear_ratio;
         }
 
         // 更新电机命令
         cmd.q = rotor_angle;
-        cmd.dq = 0.0f;
+        cmd.dq = rotor_velocity;  // 使用平滑后的速度
         cmd.tau = 0.0f;
 
         // 发送命令并接收数据
         if (!serial.sendRecv(&cmd, &data)) {
-            std::cerr << "\rCommunication failed, will retry last position..." << std::flush;
+            retry_count++;
+            if (retry_count >= MAX_RETRY_COUNT) {
+                std::cerr << "\nError: Failed to send command after " << MAX_RETRY_COUNT << " attempts!" << std::endl;
+                break;
+            }
             need_resend = true;
-            std::this_thread::sleep_for(std::chrono::microseconds(RETRY_DELAY_US));
-            continue;
+            std::cerr << "\rCommunication failed, will retry in next period. Retry: " << retry_count << "/" << MAX_RETRY_COUNT << std::flush;
+        } else {
+            // 通信成功，更新状态
+            need_resend = false;
+            last_successful_time = elapsed_time;
+            last_successful_position = desired_angle_deg;
+            last_successful_velocity = desired_velocity_rad;
+            retry_count = 0;
         }
 
-        // 通信成功，更新状态
-        need_resend = false;
-        last_successful_time = elapsed_time;
-        last_successful_position = desired_angle_deg;
+        // 更新控制时间
         last_control_time = current_time;
 
         // 计算功率
@@ -306,10 +340,12 @@ int main() {
             std::cout << "\rTime: " << elapsed_time << "s / " << run_time << "s"
                       << " | Position: " << ((data.q-zero_position) / gear_ratio) * (180.0f / M_PI) << " deg"
                       << " | Velocity: " << data.dq / gear_ratio << " rad/s"
+                      << " | Desired Velocity: " << desired_velocity_rad << " rad/s"
                       << " | Torque: " << data.tau << " Nm"
                       << " | Temp: " << data.temp << " C"
                       << " | Error: " << data.merror 
                       << " | Resend: " << (need_resend ? "Yes" : "No")
+                      << " | Retry: " << retry_count << "/" << MAX_RETRY_COUNT
                       << " | Control Freq: " << (1000000.0f / time_since_last_control) << " Hz" << std::flush;
         }
 
