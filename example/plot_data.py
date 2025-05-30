@@ -27,18 +27,20 @@ def plot_data(filename):
     df['a_Torque(Nm)'] = filter_data(df['a_Torque(Nm)'].values)
     df['Velocity(rad/s)'] = filter_data(df['Velocity(rad/s)'].values)
     df['Power(W)'] = filter_data(df['Power(W)'].values)
+    df['Sensor_Torque(Nm)'] = filter_data(df['Sensor_Torque(Nm)'].values)
     
     # 创建图形
     plt.style.use('seaborn')
     
     # 创建一个大的图形窗口，包含所有子图
-    fig = plt.figure(figsize=(15, 10))
-    gs = GridSpec(3, 2, figure=fig)
+    fig = plt.figure(figsize=(15, 12))
+    gs = GridSpec(4, 2, figure=fig)
     
     # 1. 绘制扭矩图
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.plot(df['Time(s)'], df['d_Torque(Nm)'], label='Desired Torque', linestyle='--')
     ax1.plot(df['Time(s)'], df['a_Torque(Nm)'], label='Actual Torque (Filtered)')
+    ax1.plot(df['Time(s)'], df['Sensor_Torque(Nm)'], label='Sensor Torque (Filtered)', linestyle=':')
     ax1.set_xlabel('Time (s)')
     ax1.set_ylabel('Torque (Nm)')
     ax1.set_title('Torque vs Time')
@@ -57,7 +59,8 @@ def plot_data(filename):
     
     # 3. 绘制扭矩-位置图
     ax3 = fig.add_subplot(gs[1, 0])
-    ax3.plot(df['Position(rad)'], df['a_Torque(Nm)'], label='Torque vs Position (Filtered)')
+    ax3.plot(df['Position(rad)'], df['a_Torque(Nm)'], label='Motor Torque vs Position (Filtered)')
+    ax3.plot(df['Position(rad)'], df['Sensor_Torque(Nm)'], label='Sensor Torque vs Position (Filtered)', linestyle='--')
     ax3.set_xlabel('Position (rad)')
     ax3.set_ylabel('Torque (Nm)')
     ax3.set_title('Torque vs Position')

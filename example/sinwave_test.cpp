@@ -8,8 +8,11 @@
 #include <cstdlib>  // 添加此行用于system函数
 #include <sys/stat.h>
 #include <thread>  // 添加线程支持
+#include <mutex>
+#include <atomic>
 #include "serialPort/SerialPort.h"
 #include "unitreeMotor/unitreeMotor.h"
+#include "torque_sensor.h"
 
 #define WORK_KP 5.0f
 #define WORK_KD 20.0f
@@ -35,14 +38,15 @@ float smoothVelocity(float current_velocity, float target_velocity, float smooth
 
 // 保存数据到文件的函数
 void saveDataToFile(std::ofstream& file, float time, float desired_torque, float actual_torque, 
-                   float velocity, float position, float desired_position, float power) {
+                   float velocity, float position, float desired_position, float power, double sensor_torque) {
     file << time << "," 
          << desired_torque << "," 
          << actual_torque << "," 
          << velocity << "," 
          << position << "," 
          << desired_position << "," 
-         << power << "\n";
+         << power << "," 
+         << sensor_torque << "\n";
 }
 
 // 获取用户输入，如果用户直接按回车则使用默认值
@@ -165,6 +169,34 @@ void ensureDataDirectory() {
     mkdir("data", 0777);
 }
 
+// 共享数据结构
+struct SharedData {
+    std::mutex mutex;
+    double sensor_torque;
+    std::chrono::time_point<std::chrono::high_resolution_clock> sensor_timestamp;
+    bool has_new_data;
+
+    SharedData() : sensor_torque(0.0), has_new_data(false) {}
+};
+
+// 扭矩传感器读取线程函数
+void torqueSensorThread(std::atomic<bool>& running, SharedData& shared_data, TorqueSensor& sensor) {
+    while (running) {
+        double torque = sensor.readTorque();
+        auto now = std::chrono::high_resolution_clock::now();
+
+        {
+            std::lock_guard<std::mutex> lock(shared_data.mutex);
+            shared_data.sensor_torque = torque;
+            shared_data.sensor_timestamp = now;
+            shared_data.has_new_data = true;
+        }
+
+        // 控制读取频率，与电机控制频率相匹配
+        std::this_thread::sleep_for(std::chrono::microseconds(CONTROL_PERIOD_US));
+    }
+}
+
 int main() {
     // 确保data目录存在
     ensureDataDirectory();
@@ -173,6 +205,13 @@ int main() {
     SerialPort serial("/dev/ttyUSB0");
     MotorCmd cmd;
     MotorData data;
+
+    // 初始化扭矩传感器
+    TorqueSensor torqueSensor;
+    bool sensor_connected = torqueSensor.initialize("/dev/ttyUSB1", 115200);
+    if (!sensor_connected) {
+        std::cerr << "\033[33m警告: 扭矩传感器连接失败! 程序将继续执行，但不会记录传感器数据。\033[0m" << std::endl;
+    }
 
     // 设置电机类型为B1
     cmd.motorType = MotorType::B1;
@@ -232,7 +271,7 @@ int main() {
         std::cerr << "Error: Could not open file " << full_path << std::endl;
         return 1;
     }
-    data_file << "Time(s),d_Torque(Nm),a_Torque(Nm),Velocity(rad/s),Position(rad),Desired_Position(rad),Power(W)\n";
+    data_file << "Time(s),d_Torque(Nm),a_Torque(Nm),Velocity(rad/s),Position(rad),Desired_Position(rad),Power(W),Sensor_Torque(Nm)\n";
 
     // 记录开始时间
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -250,6 +289,16 @@ int main() {
     auto last_control_time = std::chrono::high_resolution_clock::now();
     int retry_count = 0;  // 当前重试次数
     
+    // 初始化共享数据和线程控制
+    SharedData shared_data;
+    std::atomic<bool> running(true);
+
+    // 只有在传感器连接成功时才启动传感器线程
+    std::thread sensor_thread;
+    if (sensor_connected) {
+        sensor_thread = std::thread(torqueSensorThread, std::ref(running), std::ref(shared_data), std::ref(torqueSensor));
+    }
+
     while (elapsed_time < run_time) {
         // 计算时间间隔
         auto current_time = std::chrono::high_resolution_clock::now();
@@ -320,10 +369,20 @@ int main() {
         // 更新控制时间
         last_control_time = current_time;
 
+        // 获取扭矩传感器数据
+        double sensor_torque = 0.0;
+        bool has_new_data = false;
+        {
+            std::lock_guard<std::mutex> lock(shared_data.mutex);
+            sensor_torque = shared_data.sensor_torque;
+            has_new_data = shared_data.has_new_data;
+            shared_data.has_new_data = false;
+        }
+
         // 计算功率
         float power = data.tau * data.dq;
 
-        // 保存数据
+        // 保存数据（无论是否有新的传感器数据都保存）
         saveDataToFile(data_file, 
                       elapsed_time,
                       cmd.tau,
@@ -331,7 +390,8 @@ int main() {
                       data.dq / gear_ratio,
                       (data.q-zero_position) / gear_ratio,
                       desired_angle_rad,
-                      power);
+                      power,
+                      sensor_torque);
 
         // 打印状态（降低打印频率，每1000次打印一次）
         static int print_counter = 0;
@@ -342,6 +402,7 @@ int main() {
                       << " | Velocity: " << data.dq / gear_ratio << " rad/s"
                       << " | Desired Velocity: " << desired_velocity_rad << " rad/s"
                       << " | Torque: " << data.tau << " Nm"
+                      << " | Sensor Torque: " << sensor_torque << " Nm"
                       << " | Temp: " << data.temp << " C"
                       << " | Error: " << data.merror 
                       << " | Resend: " << (need_resend ? "Yes" : "No")
@@ -363,6 +424,17 @@ int main() {
 
     // 绘制数据图表（使用完整路径）
     plotData(filename);
+
+    // 停止扭矩传感器线程
+    running = false;
+    if (sensor_connected && sensor_thread.joinable()) {
+        sensor_thread.join();
+    }
+
+    // 关闭扭矩传感器
+    if (sensor_connected) {
+        torqueSensor.close();
+    }
 
     return 0;
 }
