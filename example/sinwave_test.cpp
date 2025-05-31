@@ -292,6 +292,7 @@ int main() {
     // 初始化共享数据和线程控制
     SharedData shared_data;
     std::atomic<bool> running(true);
+    double last_valid_sensor_torque = 0.0;  // 保存最后一次有效的传感器数据
 
     // 只有在传感器连接成功时才启动传感器线程
     std::thread sensor_thread;
@@ -370,12 +371,13 @@ int main() {
         last_control_time = current_time;
 
         // 获取扭矩传感器数据
-        double sensor_torque = 0.0;
         bool has_new_data = false;
         {
             std::lock_guard<std::mutex> lock(shared_data.mutex);
-            sensor_torque = shared_data.sensor_torque;
-            has_new_data = shared_data.has_new_data;
+            if (shared_data.has_new_data) {
+                last_valid_sensor_torque = shared_data.sensor_torque;
+                has_new_data = true;
+            }
             shared_data.has_new_data = false;
         }
 
@@ -391,7 +393,7 @@ int main() {
                       (data.q-zero_position) / gear_ratio,
                       desired_angle_rad,
                       power,
-                      sensor_torque);
+                      last_valid_sensor_torque);  // 使用最后一次有效的传感器数据
 
         // 打印状态（降低打印频率，每1000次打印一次）
         static int print_counter = 0;
@@ -402,7 +404,7 @@ int main() {
                       << " | Velocity: " << data.dq / gear_ratio << " rad/s"
                       << " | Desired Velocity: " << desired_velocity_rad << " rad/s"
                       << " | Torque: " << data.tau << " Nm"
-                      << " | Sensor Torque: " << sensor_torque << " Nm"
+                      << " | Sensor Torque: " << last_valid_sensor_torque << " Nm"
                       << " | Temp: " << data.temp << " C"
                       << " | Error: " << data.merror 
                       << " | Resend: " << (need_resend ? "Yes" : "No")

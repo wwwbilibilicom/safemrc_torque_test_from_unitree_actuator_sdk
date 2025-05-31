@@ -34,7 +34,7 @@ def plot_data(filename):
     
     # 创建一个大的图形窗口，包含所有子图
     fig = plt.figure(figsize=(15, 12))
-    gs = GridSpec(4, 2, figure=fig)
+    gs = GridSpec(3, 2, figure=fig)
     
     # 1. 绘制扭矩图
     ax1 = fig.add_subplot(gs[0, 0])
