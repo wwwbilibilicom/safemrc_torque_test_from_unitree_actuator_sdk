@@ -8,7 +8,17 @@ from matplotlib.gridspec import GridSpec
 from scipy.signal import savgol_filter
 
 def filter_data(data, window_length=100, polyorder=4):
-    """使用Savitzky-Golay滤波器进行滤波"""
+    """使用Savitzky-Golay滤波器进行滤波，窗口长度自适应"""
+    # 确保窗口长度是奇数
+    if len(data) < window_length:
+        window_length = min(len(data) - (len(data) % 2) - 1, 51)  # 使用较小的窗口
+        window_length = max(window_length, 5)  # 确保窗口至少为5
+    elif window_length % 2 == 0:
+        window_length += 1
+    
+    # 确保多项式阶数小于窗口长度
+    polyorder = min(polyorder, window_length - 1)
+    
     return savgol_filter(data, window_length, polyorder)
 
 def plot_data(filename):

@@ -10,16 +10,30 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <iomanip>
+#include <sstream>
+#include <algorithm>
 #include "serialPort/SerialPort.h"
 #include "unitreeMotor/unitreeMotor.h"
 #include "torque_sensor.h"
 
 #define WORK_KP 0.0f  // 力矩控制时位置环增益为0
 #define WORK_KD 0.0f  // 力矩控制时速度环增益为0
+#define CONTROL_PERIOD_US 10  // 控制周期：10微秒 (100kHz)
+#define MAX_RETRY_COUNT 3     // 最大重试次数
+#define RETRY_DELAY_US 5      // 重试延时（微秒）
+#define DEFAULT_CURRENT 0.5f  // 默认安全电流值（A）
 
 // 生成正弦波轨迹的函数
 float generateSineWave(float time, float amplitude, float frequency) {
-    return amplitude * sin(2 * M_PI * frequency * time);
+    // 使用更精确的相位计算
+    float phase = 2.0f * M_PI * frequency * time;
+    return amplitude * sin(phase);
+}
+
+// 添加数据平滑函数
+float smoothData(float current_value, float new_value, float smoothing_factor = 0.8f) {
+    return current_value * smoothing_factor + new_value * (1.0f - smoothing_factor);
 }
 
 // 保存数据到文件的函数
@@ -69,7 +83,7 @@ void setCurrentPositionAsZero(SerialPort& serial, MotorCmd& cmd, MotorData& data
             std::cerr << "Error: Lost communication during zero position setting!" << std::endl;
             return;
         }
-        usleep(2000);  // 2000微秒延时
+        std::this_thread::sleep_for(std::chrono::microseconds(2000));  // 2000微秒延时
     }
     
     // 2. 记录当前位置作为新的零位（考虑减速比）
@@ -91,7 +105,7 @@ void setCurrentPositionAsZero(SerialPort& serial, MotorCmd& cmd, MotorData& data
             std::cerr << "Error: Lost communication during control parameter restoration!" << std::endl;
             return;
         }
-        usleep(2000);  // 2000微秒延时
+        std::this_thread::sleep_for(std::chrono::microseconds(2000));  // 2000微秒延时
     }
     
     std::cout << "Zero position setting completed" << std::endl;
@@ -137,8 +151,49 @@ void torqueSensorThread(std::atomic<bool>& running, SharedData& shared_data, Tor
         }
 
         // 控制读取频率，与电机控制频率相匹配
-        std::this_thread::sleep_for(std::chrono::microseconds(2000)); // 500Hz to match motor control
+        std::this_thread::sleep_for(std::chrono::microseconds(CONTROL_PERIOD_US));
     }
+}
+
+// 生成自动文件名
+std::string generateFileName(float amplitude, float frequency, float cycles, float current) {
+    std::stringstream ss;
+    // 将浮点数转换为字符串，并替换小数点为下划线
+    ss << "sinTorque_amp" << std::fixed << std::setprecision(2) << amplitude;
+    std::string str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    // 清空stringstream并继续添加其他参数
+    ss.str("");
+    ss << str << "_freq" << frequency;
+    str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    ss.str("");
+    ss << str << "_cyc" << cycles;
+    str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    ss.str("");
+    ss << str << "_cur" << current << "A";
+    str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    return str;
+}
+
+// 打印测试参数
+void printTestParameters(float amplitude, float frequency, float cycles, float current, 
+                        const std::string& filename, float run_time) {
+    std::cout << "\n========== Test Parameters ==========\n"
+              << "Test Type: Sinusoidal Torque Control\n"
+              << "Amplitude: " << amplitude << " Nm\n"
+              << "Frequency: " << frequency << " Hz\n"
+              << "Cycles: " << cycles << "\n"
+              << "Control Current: " << current << " A\n"
+              << "Run Time: " << run_time << " s\n"
+              << "Data File: " << filename << ".csv\n"
+              << "===================================\n" << std::endl;
 }
 
 int main() {
@@ -193,13 +248,15 @@ int main() {
     float amplitude = getInputWithDefault("Enter torque amplitude (Nm)", 1.0f);
     float frequency = getInputWithDefault("Enter frequency (Hz)", 1.0f);
     float cycles = getInputWithDefault("Enter number of cycles", 3.0f);
+    float current = getInputWithDefault("Enter control current (A)", DEFAULT_CURRENT);
     
     // 修改文件保存路径
     std::string filename;
-    std::cout << "Enter filename [demo]: ";
+    std::string auto_filename = generateFileName(amplitude, frequency, cycles, current);
+    std::cout << "Enter filename [" << auto_filename << "]: ";
     std::getline(std::cin, filename);
     if (filename.empty()) {
-        filename = "demo";
+        filename = auto_filename;
     }
     
     // 构建完整的文件路径（相对于example目录）
@@ -207,6 +264,10 @@ int main() {
     
     // 计算运行时间
     float run_time = cycles / frequency;
+    
+    // 打印测试参数
+    printTestParameters(amplitude, frequency, cycles, current, filename, run_time);
+    
     std::cout << "\nRunning for " << run_time << " seconds" << std::endl;
 
     // 创建数据文件
@@ -219,6 +280,7 @@ int main() {
 
     // 记录开始时间
     auto start_time = std::chrono::high_resolution_clock::now();
+    auto last_control_time = start_time;  // 添加控制时间变量
     float elapsed_time = 0.0f;
 
     std::cout << "Starting motor control..." << std::endl;
@@ -235,15 +297,42 @@ int main() {
         sensor_thread = std::thread(torqueSensorThread, std::ref(running), std::ref(shared_data), std::ref(torqueSensor));
     }
 
+    // 添加平滑处理相关变量
+    float smoothed_torque = 0.0f;
+    const float TORQUE_SMOOTHING_FACTOR = 0.8f;
+
     // 主控制循环
     while (elapsed_time < run_time) {
-        // 计算期望力矩（正弦波）
-        float desired_torque = generateSineWave(elapsed_time, amplitude, frequency);
+        // 更新运行时间
+        elapsed_time = std::chrono::duration<float>(
+            std::chrono::high_resolution_clock::now() - start_time
+        ).count();
 
+        // 计算时间间隔
+        auto current_time = std::chrono::high_resolution_clock::now();
+        auto time_since_last_control = std::chrono::duration_cast<std::chrono::microseconds>(
+            current_time - last_control_time
+        ).count();
+        
+        // 如果距离上次控制时间不足一个控制周期，则等待
+        if (time_since_last_control < CONTROL_PERIOD_US) {
+            std::this_thread::sleep_for(
+                std::chrono::microseconds(CONTROL_PERIOD_US - time_since_last_control)
+            );
+            continue;
+        }
+
+        // 更新控制时间
+        last_control_time = current_time;
+
+        // 计算期望力矩（正弦波）并进行平滑处理
+        float raw_torque = generateSineWave(elapsed_time, amplitude, frequency);
+        smoothed_torque = smoothData(smoothed_torque, raw_torque, TORQUE_SMOOTHING_FACTOR);
+        
         // 更新电机命令
         cmd.q = zero_position;  // 保持位置不变
         cmd.dq = 0.0f;         // 速度设为0
-        cmd.tau = desired_torque; // 设置期望力矩
+        cmd.tau = smoothed_torque; // 使用平滑后的力矩值
 
         // 发送命令并接收数据
         if (!serial.sendRecv(&cmd, &data)) {
@@ -284,14 +373,6 @@ int main() {
                   << " | Sensor Torque: " << last_valid_sensor_torque << " Nm"
                   << " | Temp: " << data.temp << " C"
                   << " | Error: " << data.merror << std::flush;
-
-        // 更新运行时间
-        elapsed_time = std::chrono::duration<float>(
-            std::chrono::high_resolution_clock::now() - start_time
-        ).count();
-
-        // 控制循环延时
-        usleep(2000);  // 2000微秒延时，对应500Hz
     }
 
     std::cout << "\nMotor control completed. Data saved to " << full_path << std::endl;
@@ -310,6 +391,10 @@ int main() {
     if (sensor_connected) {
         torqueSensor.close();
     }
+
+    // 再次打印测试参数作为总结
+    std::cout << "\nTest Summary:" << std::endl;
+    printTestParameters(amplitude, frequency, cycles, current, filename, run_time);
 
     return 0;
 } 

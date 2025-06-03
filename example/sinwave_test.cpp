@@ -10,6 +10,9 @@
 #include <thread>  // 添加线程支持
 #include <mutex>
 #include <atomic>
+#include <iomanip>
+#include <sstream>
+#include <algorithm>  // 添加algorithm头文件用于std::replace
 #include "serialPort/SerialPort.h"
 #include "unitreeMotor/unitreeMotor.h"
 #include "torque_sensor.h"
@@ -20,6 +23,7 @@
 #define MAX_RETRY_COUNT 3     // 最大重试次数
 #define RETRY_DELAY_US 5      // 重试延时（微秒）
 #define VELOCITY_SMOOTHING_FACTOR 0.8f  // 速度平滑因子 (0-1之间，越小越平滑)
+#define DEFAULT_CURRENT 0.5f  // 默认安全电流值（A）
 
 // 生成正弦波轨迹的函数
 float generateSineWave(float time, float amplitude, float frequency, float zero_offset = 0.0f) {
@@ -197,6 +201,47 @@ void torqueSensorThread(std::atomic<bool>& running, SharedData& shared_data, Tor
     }
 }
 
+// 生成自动文件名
+std::string generateFileName(float amplitude, float frequency, float cycles, float current) {
+    std::stringstream ss;
+    // 将浮点数转换为字符串，并替换小数点为下划线
+    ss << "sinPosition_amp" << std::fixed << std::setprecision(2) << amplitude;
+    std::string str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    // 清空stringstream并继续添加其他参数
+    ss.str("");
+    ss << str << "_freq" << frequency;
+    str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    ss.str("");
+    ss << str << "_cyc" << cycles;
+    str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    ss.str("");
+    ss << str << "_cur" << current << "A";
+    str = ss.str();
+    std::replace(str.begin(), str.end(), '.', '_');
+    
+    return str;
+}
+
+// 打印测试参数
+void printTestParameters(float amplitude, float frequency, float cycles, float current, 
+                        const std::string& filename, float run_time) {
+    std::cout << "\n========== Test Parameters ==========\n"
+              << "Test Type: Sinusoidal Position Control\n"
+              << "Amplitude: " << amplitude << " degrees\n"
+              << "Frequency: " << frequency << " Hz\n"
+              << "Cycles: " << cycles << "\n"
+              << "Control Current: " << current << " A\n"
+              << "Run Time: " << run_time << " s\n"
+              << "Data File: " << filename << ".csv\n"
+              << "===================================\n" << std::endl;
+}
+
 int main() {
     // 确保data目录存在
     ensureDataDirectory();
@@ -249,13 +294,15 @@ int main() {
     float amplitude = getInputWithDefault("Enter amplitude (degrees)", 1.0f);
     float frequency = getInputWithDefault("Enter frequency (Hz)", 1.0f);
     float cycles = getInputWithDefault("Enter number of cycles", 3.0f);
+    float current = getInputWithDefault("Enter control current (A)", DEFAULT_CURRENT);
     
     // 修改文件保存路径
     std::string filename;
-    std::cout << "Enter filename [demo]: ";
+    std::string auto_filename = generateFileName(amplitude, frequency, cycles, current);
+    std::cout << "Enter filename [" << auto_filename << "]: ";
     std::getline(std::cin, filename);
     if (filename.empty()) {
-        filename = "demo";
+        filename = auto_filename;
     }
     
     // 构建完整的文件路径（相对于example目录）
@@ -263,6 +310,10 @@ int main() {
     
     // 计算运行时间
     float run_time = cycles / frequency;
+    
+    // 打印测试参数
+    printTestParameters(amplitude, frequency, cycles, current, filename, run_time);
+    
     std::cout << "\nRunning for " << run_time << " seconds" << std::endl;
 
     // 创建数据文件
@@ -437,6 +488,10 @@ int main() {
     if (sensor_connected) {
         torqueSensor.close();
     }
+
+    // 再次打印测试参数作为总结
+    std::cout << "\nTest Summary:" << std::endl;
+    printTestParameters(amplitude, frequency, cycles, current, filename, run_time);
 
     return 0;
 }
