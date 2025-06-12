@@ -122,16 +122,19 @@ void setCurrentPositionAsZero(SerialPort& serial, MotorCmd& cmd, MotorData& data
 void plotData(const std::string& filename) {
     // 使用conda的Python
     std::string command = "cd ../example && /home/wenbo/anaconda3/envs/torque-bench/bin/python plot_data.py data/" + filename;
-    std::cout << "\nGenerating plots..." << std::endl;
+    std::cout << "\nGenerating and saving plots..." << std::endl;
     int result = system(command.c_str());
     if (result != 0) {
-        std::cerr << "Error: Failed to generate plots!" << std::endl;
+        std::cerr << "Error: Failed to generate and save plots!" << std::endl;
+    } else {
+        std::cout << "Plots have been saved to figure/" << filename << ".png" << std::endl;
     }
 }
 
 // 创建目录的函数
 void ensureDataDirectory() {
     mkdir("data", 0777);
+    mkdir("figure", 0777);  // 创建figure目录
 }
 
 // 共享数据结构

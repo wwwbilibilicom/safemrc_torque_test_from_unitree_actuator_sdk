@@ -30,6 +30,13 @@ def plot_data(filename):
     if not os.path.dirname(filename):
         filename = os.path.join('data', filename)
     
+    # 创建figure目录（如果不存在）
+    figure_dir = 'figure'
+    os.makedirs(figure_dir, exist_ok=True)
+    
+    # 获取不带扩展名的文件名，用于保存图片
+    base_filename = os.path.splitext(os.path.basename(filename))[0]
+    
     # 读取CSV文件
     df = pd.read_csv(filename)
     
@@ -97,6 +104,11 @@ def plot_data(filename):
     
     # 调整子图之间的间距
     plt.tight_layout()
+    
+    # 保存图片
+    figure_path = os.path.join(figure_dir, f'{base_filename}.png')
+    plt.savefig(figure_path, dpi=300, bbox_inches='tight')
+    print(f"Figure saved to {figure_path}")
     
     # 显示图形
     plt.show()
