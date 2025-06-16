@@ -79,7 +79,7 @@ double TorqueSensor::readTorque() {
                 U_DATA |= ((uint16_t)buffer[i + 5]) << 8;
                 
                 // 转换为扭矩值
-                return hex2dec(U_DATA)*0.3 / 100.0;
+                return hex2dec(U_DATA) / 30.0;
             }
         }
 

@@ -18,7 +18,7 @@
 #include <algorithm>
 
 // 电机相关宏定义
-#define MOTOR_TYPE MotorType::B1  // 电机型号，可选 A1、B1、C1、Go2
+#define MOTOR_TYPE MotorType::GO_M8010_6  // 电机型号，可选 A1、B1、C1、Go2
 #define WORK_KP 0.0f             // 力矩控制时位置环增益为0
 #define WORK_KD 0.0f             // 力矩控制时速度环增益为0
 #define CONTROL_PERIOD_US 10     // 控制周期：10微秒 (100kHz)
@@ -175,7 +175,7 @@ void torqueSensorThread(std::atomic<bool>& running, SharedData& shared_data, Tor
 }
 
 // 生成自动文件名
-std::string generateFileName(float bias, float amplitude, float frequency, 
+std::string generateFileName(float bias, float amplitude_percentage, float frequency, 
                            float ramp_time, float hold_time, float cycles, float current) {
     std::stringstream ss;
     ss << "compositeLoad_bias" << std::fixed << std::setprecision(2) << bias;
@@ -183,7 +183,7 @@ std::string generateFileName(float bias, float amplitude, float frequency,
     std::replace(str.begin(), str.end(), '.', '_');
     
     ss.str("");
-    ss << str << "_amp" << amplitude;
+    ss << str << "_amp" << amplitude_percentage << "pct";  // 使用百分比
     str = ss.str();
     std::replace(str.begin(), str.end(), '.', '_');
     
@@ -216,13 +216,15 @@ std::string generateFileName(float bias, float amplitude, float frequency,
 }
 
 // 打印测试参数
-void printTestParameters(float bias, float amplitude, float frequency, 
+void printTestParameters(float bias, float amplitude_percentage, float frequency, 
                        float ramp_time, float hold_time, float cycles, 
                        float current, const std::string& filename, float run_time) {
+    float amplitude = (amplitude_percentage / 100.0f) * bias / 2.0f;  // 计算实际幅值
     std::cout << "\n========== Test Parameters ==========\n"
               << "Test Type: Composite Load Control\n"
               << "Bias Torque: " << bias << " Nm\n"
-              << "Sine Wave Amplitude: " << amplitude << " Nm\n"
+              << "Sine Wave Amplitude: " << amplitude_percentage << "% of bias torque\n"
+              << "  (Peak-to-Peak: " << (2.0f * amplitude) << " Nm)\n"
               << "Frequency: " << frequency << " Hz\n"
               << "Ramp Time: " << ramp_time << " s\n"
               << "Hold Time: " << hold_time << " s\n"
@@ -276,9 +278,12 @@ int main() {
     data.motorType = MOTOR_TYPE;
 
     // 获取减速比
-    float gear_ratio = queryGearRatio(MOTOR_TYPE);
+    float gear_ratio = queryGearRatio(MOTOR_TYPE)*1.2;
     std::cout << "Motor Type: " << static_cast<int>(MOTOR_TYPE) << std::endl;
     std::cout << "Gear ratio: " << gear_ratio << std::endl;
+    std::cout << "Note: All displayed and saved torque values are at output shaft (after gear ratio)" << std::endl;
+    std::cout << "      Motor rotor torque will be automatically scaled by 1/" << gear_ratio << std::endl;
+    std::cout << std::string(50, '-') << std::endl;
 
     // 设置电机控制参数（力矩控制模式）
     cmd.mode = queryMotorMode(MOTOR_TYPE, MotorMode::FOC);
@@ -306,7 +311,8 @@ int main() {
 
     // 获取用户输入参数（带默认值）
     float bias = getInputWithDefault("Enter bias torque (Nm)", 5.0f);
-    float amplitude = getInputWithDefault("Enter sine wave amplitude (Nm)", 2.0f);
+    float amplitude_percentage = getInputWithDefault("Enter sine wave amplitude as percentage of bias torque (%)", 40.0f);
+    float amplitude = (amplitude_percentage / 100.0f) * bias / 2.0f;  // 将百分比转换为实际幅值
     float frequency = getInputWithDefault("Enter frequency (Hz)", 0.5f);
     float ramp_time = getInputWithDefault("Enter ramp time (s)", 2.0f);
     float hold_time = getInputWithDefault("Enter hold time (s)", 1.0f);
@@ -319,7 +325,7 @@ int main() {
     
     // 修改文件名生成函数
     std::string filename;
-    std::string auto_filename = generateFileName(bias, amplitude, frequency, 
+    std::string auto_filename = generateFileName(bias, amplitude_percentage, frequency, 
                                                ramp_time, hold_time, cycles, current);
     std::cout << "Enter filename [" << auto_filename << "]: ";
     std::getline(std::cin, filename);
@@ -331,7 +337,7 @@ int main() {
     std::string full_path = "../example/data/" + filename + ".csv";
     
     // 打印测试参数
-    printTestParameters(bias, amplitude, frequency, 
+    printTestParameters(bias, amplitude_percentage, frequency, 
                        ramp_time, hold_time, cycles, 
                        current, filename, run_time);
     
@@ -392,8 +398,8 @@ int main() {
                                              frequency, ramp_time, hold_time);
         smoothed_torque = smoothData(smoothed_torque, raw_torque);
         
-        // 更新电机命令（直接设置输出力矩）
-        cmd.tau = smoothed_torque;
+        // 更新电机命令（考虑减速比，将输出端期望扭矩转换为转子端扭矩指令）
+        cmd.tau = smoothed_torque / gear_ratio;
 
         // 发送命令并接收数据
         if (!serial.sendRecv(&cmd, &data)) {
@@ -410,18 +416,21 @@ int main() {
             }
         }
 
-        // 计算功率
+        // 计算功率（使用转子端的扭矩和速度）
         float power = data.tau * data.dq;
 
         // 计算实际输出轴位置和速度（考虑减速比和零位）
         float output_position = (data.q - zero_position) / gear_ratio;
         float output_velocity = data.dq / gear_ratio;
+        
+        // 计算输出端实际扭矩（将电机反馈的转子扭矩转换为输出扭矩）
+        float output_torque = data.tau * gear_ratio;
 
         // 保存数据（保持与plot_data.py预期格式一致）
         saveDataToFile(data_file, 
                       elapsed_time,    // Time(s)
-                      cmd.tau,         // d_Torque(Nm) - 期望力矩
-                      data.tau,        // a_Torque(Nm) - 实际力矩
+                      smoothed_torque, // d_Torque(Nm) - 输出端期望扭矩
+                      output_torque,   // a_Torque(Nm) - 输出端实际扭矩
                       output_velocity, // Velocity(rad/s)
                       output_position, // Position(rad)
                       0.0f,           // Desired_Position(rad) - 力矩控制模式下不使用
@@ -432,8 +441,8 @@ int main() {
         std::cout << "\rTime: " << elapsed_time << "s / " << run_time << "s"
                   << " | Position: " << output_position * (180.0f / M_PI) << " deg"
                   << " | Velocity: " << output_velocity << " rad/s"
-                  << " | Desired Torque: " << cmd.tau << " Nm"
-                  << " | Actual Torque: " << data.tau << " Nm"
+                  << " | Desired Torque: " << smoothed_torque << " Nm"
+                  << " | Actual Torque: " << output_torque << " Nm"
                   << " | Sensor Torque: " << last_valid_sensor_torque << " Nm"
                   << " | Temp: " << data.temp << " C"
                   << " | Error: " << data.merror 
@@ -467,7 +476,7 @@ int main() {
 
     // 再次打印测试参数作为总结
     std::cout << "\nTest Summary:" << std::endl;
-    printTestParameters(bias, amplitude, frequency, 
+    printTestParameters(bias, amplitude_percentage, frequency, 
                        ramp_time, hold_time, cycles, 
                        current, filename, run_time);
 
