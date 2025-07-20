@@ -40,6 +40,38 @@ def plot_data(filename):
     # 读取CSV文件
     df = pd.read_csv(filename)
     
+    # 判断数据类型
+    if set(["Time(s)", "Desired_Acceleration(rad/s^2)", "Desired_Velocity(rad/s)", "Desired_Position(rad)", "Output_Velocity(rad/s)", "Output_Position(rad)"]).issubset(df.columns):
+        # 新版钟形曲线实验数据，对比期望与实际
+        plt.style.use('seaborn')
+        fig, axs = plt.subplots(2, 1, figsize=(10, 8))
+        # 角位移对比
+        axs[0].plot(df['Time(s)'], df['Desired_Position(rad)'], label='Desired Position (rad)', linestyle='--')
+        axs[0].plot(df['Time(s)'], df['Output_Position(rad)'], label='Output Position (rad)')
+        axs[0].set_xlabel('Time (s)')
+        axs[0].set_ylabel('Position (rad)')
+        axs[0].set_title('Position vs Time')
+        axs[0].grid(True)
+        axs[0].legend()
+        # 角速度对比
+        axs[1].plot(df['Time(s)'], df['Desired_Velocity(rad/s)'], label='Desired Velocity (rad/s)', linestyle='--')
+        axs[1].plot(df['Time(s)'], df['Output_Velocity(rad/s)'], label='Output Velocity (rad/s)')
+        axs[1].set_xlabel('Time (s)')
+        axs[1].set_ylabel('Velocity (rad/s)')
+        axs[1].set_title('Velocity vs Time')
+        axs[1].grid(True)
+        axs[1].legend()
+       
+        plt.tight_layout()
+        figure_dir = 'figure'
+        os.makedirs(figure_dir, exist_ok=True)
+        base_filename = os.path.splitext(os.path.basename(filename))[0]
+        figure_path = os.path.join(figure_dir, f'{base_filename}.png')
+        plt.savefig(figure_path, dpi=300, bbox_inches='tight')
+        print(f"Figure saved to {figure_path}")
+        plt.show()
+        return
+    
     # 对数据进行滤波处理
     df['a_Torque(Nm)'] = filter_data(df['a_Torque(Nm)'].values)
     df['Velocity(rad/s)'] = filter_data(df['Velocity(rad/s)'].values)

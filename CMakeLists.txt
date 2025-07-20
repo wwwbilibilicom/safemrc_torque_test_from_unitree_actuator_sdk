@@ -54,6 +54,9 @@ target_link_libraries(trianglewave_test ${EXTRA_LIBS} stdc++fs torque_sensor Thr
 add_executable(singlesidesin_test example/singlesidesin_test.cpp)
 target_link_libraries(singlesidesin_test ${EXTRA_LIBS} stdc++fs torque_sensor Threads::Threads)
 
+add_executable(bellshape_velocity_test example/bellshape_velocity_test.cpp)
+target_link_libraries(bellshape_velocity_test ${EXTRA_LIBS})
+
 set(LIBRARY_OUTPUT_PATH "../lib")
 add_subdirectory(thirdparty/pybind11)
 pybind11_add_module(unitree_actuator_sdk thirdparty/python_wrapper/wrapper.cpp)
