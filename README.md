@@ -108,6 +108,42 @@ for i in range(10):
     time.sleep(0.1)
 ```
 
+### SafeMRC Modes
+
+| Mode Value | Name         | Description                                 |
+|:----------:|:------------|:--------------------------------------------|
+| 0          | FREE        | Free mode (no active control, output off)   |
+| 1          | FIX_LIMIT   | Fixed limit mode (position/safety limit)    |
+| 2          | ADAPTATION  | Adaptation mode (compliance, soft control)  |
+| 3          | DEBUG       | Debug mode (for development/testing)        |
+
+### SafeMRC Communication Protocol
+
+#### Command Frame Structure
+| Field         | Type      | Bytes | Description                        |
+|:-------------|:----------|:-----:|:-----------------------------------|
+| Header       | uint8[2]  | 2     | 0xFE, 0xEE (frame header)          |
+| ID           | uint8     | 1     | Device ID                          |
+| Mode         | uint8     | 1     | Control mode (see table above)     |
+| Current      | int32     | 4     | Desired coil current (mA, little-endian) |
+| CRC16        | uint16    | 2     | CRC-CCITT checksum (little-endian) |
+| **Total**    |           | **10**|                                   |
+
+#### Feedback Frame Structure
+| Field         | Type      | Bytes | Description                        |
+|:-------------|:----------|:-----:|:-----------------------------------|
+| Header       | uint8[2]  | 2     | 0xFE, 0xEE (frame header)          |
+| ID           | uint8     | 1     | Device ID                          |
+| Mode         | uint8     | 1     | Current mode                       |
+| Collision    | uint8     | 1     | Collision flag (0: safe, 1: collision) |
+| Encoder      | int32     | 4     | Encoder value (signed, little-endian) |
+| Velocity     | int32     | 4     | Encoder velocity (signed, little-endian) |
+| Current      | int16     | 2     | Present current (signed, little-endian, mA) |
+| CRC16        | uint16    | 2     | CRC-CCITT checksum (little-endian) |
+| **Total**    |           | **17**|                                   |
+
+**Note:** All multi-byte fields use little-endian byte order. CRC is calculated over all bytes except the CRC field itself.
+
 ---
 
 ## Motor Collision Detection UI

@@ -197,6 +197,8 @@ if __name__ == '__main__':
     print("SafeMRC SDK Simple Test Program")
     safe_mrc = SafeMRC("/dev/ttyUSB1")
     cmd = SafeMRCCmd(mode=0, current=0.0)
+    cmd.mode = 1
+    cmd.current = 0.0
     data = SafeMRCData()
     print("Sending command in a loop. Press Ctrl+C to exit.")
     try:
