@@ -158,8 +158,10 @@ for i in range(10):
 
 ### How to Run
 ```bash
-python3 python/goM8010_6_motor_collision_detection.py
+LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH python3 python/goM8010_6_motor_collision_detection.py
 ```
+
+> **Note:** You must set `LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH` so that the Unitree SDK shared libraries can be found at runtime. If you do not set this, you may get an ImportError about missing `.so` files.
 
 ### UI Features
 - **Live Plots**: Position and velocity, configurable time window
